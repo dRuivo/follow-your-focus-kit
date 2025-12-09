@@ -14,6 +14,15 @@ SMS_STS sms_sts;
 // Button pin
 #define BUTTON_PIN 15
 
+// Servo control parameters¨
+const int MAX_SPEED = 2000; // Maximum servo speed
+const float KP = 0.10; // Proportional gain for position control
+const float KI = 0.02; // Integral gain for position control
+const float KD = 2.0; // Derivative gain for position control
+const float INTEGRAL_DECAY = 0.8; // Integral decay factor
+const int DEADBAND = 4; // Position error deadband
+const bool turningDirection = true; // true for one direction, false for the other
+
 // Encoder variables
 volatile long encoderPosition = 0;
 volatile bool lastStateA = false;
@@ -26,7 +35,7 @@ void IRAM_ATTR encoderISR_A() {
   
   // Full quadrature decoding
   if (stateA != lastStateA) {
-    if (stateA == stateB) {
+    if ((stateA == stateB) ^ turningDirection) {
       encoderPosition--;  // Counter-clockwise
     } else {
       encoderPosition++;  // Clockwise
@@ -43,7 +52,7 @@ void IRAM_ATTR encoderISR_B() {
   
   // Full quadrature decoding
   if (stateB != lastStateB) {
-    if (stateA == stateB) {
+    if ((stateA == stateB) ^ turningDirection) {
       encoderPosition++;  // Clockwise
     } else {
       encoderPosition--;  // Counter-clockwise
@@ -79,13 +88,12 @@ int currentGainIndex = 1; // Start with 1.0 gain
 long lastEncoderPos = 0;
 
 // Speed control variables
-long currentServoPos = 2048; // Current servo position
-int lastServoPos = 2048;
-long targetPosition = 2048; // Target position (can be infinite)
-const int MAX_SPEED = 1000; // Maximum servo speed
-const float KP = 2.0; // Proportional gain for position control
-const int DEADBAND = 5; // Position error deadband
-const int SERVO_CENTER = 2048; // Center position
+long currentServoPos = 0; // Current servo position
+int lastServoPos = 0;
+long targetPosition = 0; // Target position (can be infinite)
+
+long last_error = 0;
+long error_sum = 0;
 
 // Function to calculate speed command based on position error
 int calculateSpeedCommand(long targetPos, int currentPos) {
@@ -94,11 +102,14 @@ int calculateSpeedCommand(long targetPos, int currentPos) {
   
   // Apply deadband to avoid jitter
   if (abs(error) <= DEADBAND) {
+    error_sum = 0;
     return 0; // Stop servo
   }
+  error_sum = error_sum*INTEGRAL_DECAY + error; // Simple integral with decay
   
   // Calculate speed command using proportional control
-  int speedCommand = (int)(error * KP);
+  int speedCommand = (int)(error * KP) + (int)(error_sum * KI) + (int)((error - last_error) * KD);
+  last_error = error;
   
   // Limit speed to maximum
   speedCommand = constrain(speedCommand, -MAX_SPEED, MAX_SPEED);
@@ -122,10 +133,6 @@ void handleButtonPress() {
         currentGainIndex = (currentGainIndex + 1) % (sizeof(gainValues) / sizeof(gainValues[0]));
         Serial.print("Gain changed to: ");
         Serial.println(gainValues[currentGainIndex]);
-        
-        // Reset encoder position when changing gain to avoid jumps
-        resetEncoderPosition();
-        lastEncoderPos = 0;
       }
     }
   }
@@ -171,8 +178,9 @@ void setup() {
   sms_sts.EnableTorque(SERVO_ID, 1);
   sms_sts.CalibrationOfs(SERVO_ID);
   delay(500);
-
   
+  lastServoPos = sms_sts.ReadPos(SERVO_ID);
+
   Serial.print("Initial gain: ");
   Serial.println(gainValues[currentGainIndex]);
 }
@@ -187,7 +195,7 @@ void loop()
   
   // Calculate target position based on encoder and gain
   long encoderDelta = encoderPos - lastEncoderPos;
-  targetPosition = SERVO_CENTER + (long)(encoderPos * gainValues[currentGainIndex]);
+  targetPosition += (long)(encoderDelta * gainValues[currentGainIndex]);
   
   // Read current servo position
   int newServoPos = sms_sts.ReadPos(SERVO_ID);
@@ -226,5 +234,5 @@ void loop()
   Serial.print(", Error: ");
   Serial.println(targetPosition - currentServoPos);
   
-  delay(20); // Faster loop for better control response
+  delay(50); // Faster loop for better control response
 }
