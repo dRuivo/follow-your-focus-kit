@@ -68,6 +68,44 @@ void resetEncoderPosition() {
   interrupts();
 }
 
+// Button debouncing variables
+bool buttonPressed = false;
+bool lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50; // milliseconds
+// Gain settings
+const float gainValues[] = {0.5, 1.0, 2.0, 4.0};
+int currentGainIndex = 1; // Start with 1.0 gain
+long lastEncoderPos = 0;
+const int servoOffset = 2048; // Center position for 0-4095 range
+
+// Function to handle button press for gain changes
+void handleButtonPress() {
+  bool reading = digitalRead(BUTTON_PIN);
+  
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+  
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonPressed) {
+      buttonPressed = reading;
+      
+      if (buttonPressed == LOW) { // Button pressed (assuming active low)
+        currentGainIndex = (currentGainIndex + 1) % (sizeof(gainValues) / sizeof(gainValues[0]));
+        Serial.print("Gain changed to: ");
+        Serial.println(gainValues[currentGainIndex]);
+        
+        // Reset encoder position when changing gain to avoid jumps
+        resetEncoderPosition();
+        lastEncoderPos = 0;
+      }
+    }
+  }
+  
+  lastButtonState = reading;
+}
+
 
 void setup() {
   Serial.begin(115200);
@@ -76,6 +114,9 @@ void setup() {
   // Initialize encoder pins
   pinMode(ENCODER_A_PIN, INPUT_PULLUP);
   pinMode(ENCODER_B_PIN, INPUT_PULLUP);
+  
+  // Initialize button pin
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   
   // Read initial states
   lastStateA = digitalRead(ENCODER_A_PIN);
@@ -91,119 +132,50 @@ void setup() {
   Serial1.begin(1000000, SERIAL_8N1, SERVO_RX_PIN, SERVO_TX_PIN);
   sms_sts.pSerial = &Serial1; // Assign Serial1 to SCServo
   delay(1000);
+  
+  // Set initial servo position
+  sms_sts.WritePosEx(SERVO_ID, servoOffset, 100, 50); // Move to center position
+  delay(1000);
+  
+  Serial.print("Initial gain: ");
+  Serial.println(gainValues[currentGainIndex]);
 }
 
 void loop()
 {
+  // Handle button press for gain change
+  handleButtonPress();
+  
   // Read encoder position
   long encoderPos = getEncoderPosition();
-  Serial.print("Encoder Position: ");
-  Serial.println(encoderPos);
   
-  int Pos;
-  int Speed;
-  int Load;
-  int Voltage;
-  int Temper;
-  int Move;
-  int Current;
-  if(sms_sts.FeedBack(1)!=-1){
-    Pos = sms_sts.ReadPos(-1);
-    Speed = sms_sts.ReadSpeed(-1);
-    Load = sms_sts.ReadLoad(-1);
-    Voltage = sms_sts.ReadVoltage(-1);
-    Temper = sms_sts.ReadTemper(-1);
-    Move = sms_sts.ReadMove(-1);
-    Current = sms_sts.ReadCurrent(-1);
-    Serial.print("Position:");
-    Serial.println(Pos);
-    Serial.print("Speed:");
-    Serial.println(Speed);
-    Serial.print("Load:");
-    Serial.println(Load);
-    Serial.print("Voltage:");
-    Serial.println(Voltage);
-    Serial.print("Temper:");
-    Serial.println(Temper);
-    Serial.print("Move:");
-    Serial.println(Move);
-    Serial.print("Current:");
-    Serial.println(Current);
-    delay(10);
-  }else{
-    Serial.println("FeedBack err");
-    delay(500);
+  // Calculate target servo position based on encoder and gain
+  long encoderDelta = encoderPos - lastEncoderPos;
+  int targetServoPos = servoOffset + (int)(encoderPos * gainValues[currentGainIndex]);
+  
+  // Constrain servo position to valid range (0-4095 for most servos)
+  targetServoPos = constrain(targetServoPos, 0, 4095);
+  
+  // Only move servo if encoder position changed significantly
+  if (abs(encoderDelta) > 0) {
+    sms_sts.WritePosEx(SERVO_ID, targetServoPos, 500, 50); // Move servo with moderate speed
+    lastEncoderPos = encoderPos;
   }
   
-  Pos = sms_sts.ReadPos(1);
-  if(Pos!=-1){
-    Serial.print("Servo position:");
-    Serial.println(Pos, DEC);
-    delay(10);
-  }else{
-    Serial.println("read position err");
-    delay(500);
+  // Display status information
+  Serial.print("Encoder: ");
+  Serial.print(encoderPos);
+  Serial.print(", Gain: ");
+  Serial.print(gainValues[currentGainIndex]);
+  Serial.print(", Target Servo: ");
+  Serial.println(targetServoPos);
+  
+  // Read current servo position for feedback (simplified)
+  int currentServoPos = sms_sts.ReadPos(SERVO_ID);
+  if(currentServoPos != -1) {
+    Serial.print("Actual Servo Position: ");
+    Serial.println(currentServoPos);
   }
   
-  Voltage = sms_sts.ReadVoltage(1);
-  if(Voltage!=-1){
-	Serial.print("Servo Voltage:");
-    Serial.println(Voltage, DEC);
-    delay(10);
-  }else{
-    Serial.println("read Voltage err");
-    delay(500);
-  }
-  
-  Temper = sms_sts.ReadTemper(1);
-  if(Temper!=-1){
-    Serial.print("Servo temperature:");
-    Serial.println(Temper, DEC);
-    delay(10);
-  }else{
-    Serial.println("read temperature err");
-    delay(500);    
-  }
-
-  Speed = sms_sts.ReadSpeed(1);
-  if(Speed!=-1){
-    Serial.print("Servo Speed:");
-    Serial.println(Speed, DEC);
-    delay(10);
-  }else{
-    Serial.println("read Speed err");
-    delay(500);    
-  }
-  
-  Load = sms_sts.ReadLoad(1);
-  if(Load!=-1){
-    Serial.print("Servo Load:");
-    Serial.println(Load, DEC);
-    delay(10);
-  }else{
-    Serial.println("read Load err");
-    delay(500);    
-  }
-  
-  Current = sms_sts.ReadCurrent(1);
-  if(Current!=-1){
-    Serial.print("Servo Current:");
-    Serial.println(Current, DEC);
-    delay(10);
-  }else{
-    Serial.println("read Current err");
-    delay(500);    
-  }
-
-  Move = sms_sts.ReadMove(1);
-  if(Move!=-1){
-    Serial.print("Servo Move:");
-    Serial.println(Move, DEC);
-    delay(10);
-  }else{
-    Serial.println("read Move err");
-    delay(500);    
-  }
-  Serial.println();
-  delay(1000);
+  delay(50); // Small delay to avoid overwhelming the serial output
 }
