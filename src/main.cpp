@@ -77,7 +77,34 @@ const unsigned long debounceDelay = 50; // milliseconds
 const float gainValues[] = {0.5, 1.0, 2.0, 4.0};
 int currentGainIndex = 1; // Start with 1.0 gain
 long lastEncoderPos = 0;
-const int servoOffset = 2048; // Center position for 0-4095 range
+
+// Speed control variables
+long currentServoPos = 2048; // Current servo position
+int lastServoPos = 2048;
+long targetPosition = 2048; // Target position (can be infinite)
+const int MAX_SPEED = 1000; // Maximum servo speed
+const float KP = 2.0; // Proportional gain for position control
+const int DEADBAND = 5; // Position error deadband
+const int SERVO_CENTER = 2048; // Center position
+
+// Function to calculate speed command based on position error
+int calculateSpeedCommand(long targetPos, int currentPos) {
+  // Calculate position error
+  long error = targetPos - currentPos;
+  
+  // Apply deadband to avoid jitter
+  if (abs(error) <= DEADBAND) {
+    return 0; // Stop servo
+  }
+  
+  // Calculate speed command using proportional control
+  int speedCommand = (int)(error * KP);
+  
+  // Limit speed to maximum
+  speedCommand = constrain(speedCommand, -MAX_SPEED, MAX_SPEED);
+  
+  return speedCommand;
+}
 
 // Function to handle button press for gain changes
 void handleButtonPress() {
@@ -133,9 +160,18 @@ void setup() {
   sms_sts.pSerial = &Serial1; // Assign Serial1 to SCServo
   delay(1000);
   
-  // Set initial servo position
-  sms_sts.WritePosEx(SERVO_ID, servoOffset, 100, 50); // Move to center position
-  delay(1000);
+  // Enable wheel mode for speed control
+  if (sms_sts.WheelMode(SERVO_ID) == 0) {
+    Serial.println("Servo set to wheel mode (speed control)");
+  } else {
+    Serial.println("Error: Failed to set wheel mode");
+  }
+  
+  // Enable torque
+  sms_sts.EnableTorque(SERVO_ID, 1);
+  sms_sts.CalibrationOfs(SERVO_ID);
+  delay(500);
+
   
   Serial.print("Initial gain: ");
   Serial.println(gainValues[currentGainIndex]);
@@ -149,16 +185,30 @@ void loop()
   // Read encoder position
   long encoderPos = getEncoderPosition();
   
-  // Calculate target servo position based on encoder and gain
+  // Calculate target position based on encoder and gain
   long encoderDelta = encoderPos - lastEncoderPos;
-  int targetServoPos = servoOffset + (int)(encoderPos * gainValues[currentGainIndex]);
+  targetPosition = SERVO_CENTER + (long)(encoderPos * gainValues[currentGainIndex]);
   
-  // Constrain servo position to valid range (0-4095 for most servos)
-  targetServoPos = constrain(targetServoPos, 0, 4095);
+  // Read current servo position
+  int newServoPos = sms_sts.ReadPos(SERVO_ID);
+  if (newServoPos != -1) {
+    int deltaPos = newServoPos - lastServoPos;
+    // Handle wrap-around
+    if (deltaPos > 2048) {
+      deltaPos -= 4096;
+    } else if (deltaPos < -2048) {
+      deltaPos += 4096;
+    }
+    currentServoPos += deltaPos;
+    lastServoPos = newServoPos;
+  }
   
-  // Only move servo if encoder position changed significantly
-  if (abs(encoderDelta) > 0) {
-    sms_sts.WritePosEx(SERVO_ID, targetServoPos, 500, 50); // Move servo with moderate speed
+  // Calculate speed command based on position error
+  int speedCommand = calculateSpeedCommand(targetPosition, currentServoPos);
+  
+  // Send speed command to servo
+  if (abs(encoderDelta) > 0 || abs(targetPosition - currentServoPos) > DEADBAND) {
+    sms_sts.WriteSpe(SERVO_ID, speedCommand, 50); // Send speed command with acceleration
     lastEncoderPos = encoderPos;
   }
   
@@ -167,15 +217,14 @@ void loop()
   Serial.print(encoderPos);
   Serial.print(", Gain: ");
   Serial.print(gainValues[currentGainIndex]);
-  Serial.print(", Target Servo: ");
-  Serial.println(targetServoPos);
+  Serial.print(", Target: ");
+  Serial.print(targetPosition);
+  Serial.print(", Current: ");
+  Serial.print(currentServoPos);
+  Serial.print(", Speed Cmd: ");
+  Serial.print(speedCommand);
+  Serial.print(", Error: ");
+  Serial.println(targetPosition - currentServoPos);
   
-  // Read current servo position for feedback (simplified)
-  int currentServoPos = sms_sts.ReadPos(SERVO_ID);
-  if(currentServoPos != -1) {
-    Serial.print("Actual Servo Position: ");
-    Serial.println(currentServoPos);
-  }
-  
-  delay(50); // Small delay to avoid overwhelming the serial output
+  delay(20); // Faster loop for better control response
 }
